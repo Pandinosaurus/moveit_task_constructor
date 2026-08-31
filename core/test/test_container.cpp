@@ -15,7 +15,7 @@
 
 using namespace moveit::task_constructor;
 
-enum StageType
+enum StageType : uint8_t
 {
 	GEN,
 	FW,
@@ -79,20 +79,27 @@ TEST(ContainerBase, positionForInsert) {
 
 /* TODO: remove interface as it returns raw pointers */
 TEST(ContainerBase, findChild) {
-	SerialContainer s;
+	auto s = std::make_unique<SerialContainer>();
 	Stage *a, *b, *c1, *d;
-	s.add(Stage::pointer(a = new NamedStage("a")));
-	s.add(Stage::pointer(b = new NamedStage("b")));
-	s.add(Stage::pointer(c1 = new NamedStage("c")));
+	s->add(Stage::pointer(a = new NamedStage("a")));
+	s->add(Stage::pointer(b = new NamedStage("b")));
+	s->add(Stage::pointer(c1 = new NamedStage("c")));
 	auto sub = ContainerBase::pointer(new SerialContainer("c"));
 	sub->add(Stage::pointer(d = new NamedStage("d")));
-	s.add(std::move(sub));
+	s->add(std::move(sub));
 
-	EXPECT_EQ(s.findChild("a"), a);
-	EXPECT_EQ(s.findChild("b"), b);
-	EXPECT_EQ(s.findChild("c"), c1);
-	EXPECT_EQ(s.findChild("d"), nullptr);
-	EXPECT_EQ(s.findChild("c/d"), d);
+	EXPECT_EQ(s->findChild("a"), a);
+	EXPECT_EQ(s->findChild("b"), b);
+	EXPECT_EQ(s->findChild("c"), c1);
+	EXPECT_EQ(s->findChild("d"), nullptr);
+	EXPECT_EQ(s->findChild("c/d"), d);
+
+	Task t("", false, std::move(s));
+	EXPECT_EQ(t.findChild("a"), a);
+	EXPECT_EQ(t.findChild("b"), b);
+	EXPECT_EQ(t.findChild("c"), c1);
+	EXPECT_EQ(t.findChild("d"), nullptr);
+	EXPECT_EQ(t.findChild("c/d"), d);
 }
 
 template <typename Container>
@@ -103,7 +110,7 @@ protected:
 	Container container;
 	InterfacePtr dummy;
 
-	InitTest() : ::testing::Test{}, robot_model{ getModel() }, dummy{ new Interface } {}
+	InitTest() : ::testing::Test{}, robot_model{ getModel() }, dummy{ std::make_shared<Interface>() } {}
 
 	void pushInterface(bool start = true, bool end = true) {
 		// pretend, that the container is connected
@@ -586,10 +593,6 @@ TEST(Task, move) {
 	Task t2 = std::move(t1);
 	EXPECT_EQ(t2.stages()->numChildren(), 2u);
 	EXPECT_EQ(t1.stages()->numChildren(), 0u);  // NOLINT(clang-analyzer-cplusplus.Move)
-
-	t1 = std::move(t2);
-	EXPECT_EQ(t1.stages()->numChildren(), 2u);
-	EXPECT_EQ(t2.stages()->numChildren(), 0u);  // NOLINT(clang-analyzer-cplusplus.Move)
 }
 
 TEST(Task, reuse) {
@@ -622,7 +625,7 @@ TEST(Task, reuse) {
 		configure(t);
 		EXPECT_TRUE(t.plan(1));
 	} catch (const InitStageException& e) {
-		ADD_FAILURE() << "InitStageException:" << std::endl << e << t;
+		ADD_FAILURE() << "InitStageException:\n" << e << t;
 	}
 }
 
@@ -655,7 +658,7 @@ TEST(Task, timeout) {
 	// zero timeout fails
 	t.reset();
 	t.setTimeout(0.0);
-	EXPECT_FALSE(t.plan());
+	EXPECT_EQ(t.plan(), moveit::core::MoveItErrorCode::TIMED_OUT);
 
 	// time for 1 solution
 	t.reset();
@@ -670,18 +673,47 @@ TEST(Task, timeout) {
 	EXPECT_EQ(t.solutions().size(), 2u);
 }
 
-TEST(Fallback, failing) {
+// https://github.com/moveit/moveit_task_constructor/pull/597
+// https://github.com/moveit/moveit_task_constructor/pull/598
+// start planning in another thread, then preempt it in this thread
+TEST_F(TaskTestBase, preempt) {
+	moveit::core::MoveItErrorCode ec;
 	resetMockupIds();
-	Task t;
-	t.setRobotModel(getModel());
 
-	t.add(std::make_unique<GeneratorMockup>(PredefinedCosts::single(0.0)));
+	auto timeout = std::chrono::milliseconds(10);
+	auto gen1 = add(t, new GeneratorMockup(PredefinedCosts::constant(0.0)));
+	auto fwd1 = add(t, new TimedForwardMockup(timeout));
+	auto fwd2 = add(t, new TimedForwardMockup(timeout));
 
-	auto fallback = std::make_unique<Fallbacks>("Fallbacks");
-	fallback->add(std::make_unique<ForwardMockup>(PredefinedCosts::constant(0.0), 0));
-	fallback->add(std::make_unique<ForwardMockup>(PredefinedCosts::constant(0.0), 0));
-	t.add(std::move(fallback));
+	// preempt before preempt_request_ is reset in plan()
+	{
+		std::thread thread{ [&ec, this, timeout] {
+			std::this_thread::sleep_for(timeout);
+			ec = t.plan(1);
+		} };
+		t.preempt();
+		thread.join();
+	}
 
-	EXPECT_FALSE(t.plan());
+	EXPECT_EQ(ec, moveit::core::MoveItErrorCode::PREEMPTED);
 	EXPECT_EQ(t.solutions().size(), 0u);
+	EXPECT_EQ(gen1->runs_, 0u);
+	EXPECT_EQ(fwd1->runs_, 0u);
+	EXPECT_EQ(fwd2->runs_, 0u);
+	EXPECT_TRUE(t.plan(1));  // make sure the preempt request has been resetted on the previous call to plan()
+
+	t.reset();
+	{
+		std::thread thread{ [&ec, this] { ec = t.plan(1); } };
+		std::this_thread::sleep_for(timeout / 2.0);
+		t.preempt();
+		thread.join();
+	}
+
+	EXPECT_EQ(ec, moveit::core::MoveItErrorCode::PREEMPTED);
+	EXPECT_EQ(t.solutions().size(), 0u);
+	EXPECT_EQ(gen1->runs_, 1u);
+	EXPECT_EQ(fwd1->runs_, 1u);
+	EXPECT_EQ(fwd2->runs_, 0u);
+	EXPECT_TRUE(t.plan(1));  // make sure the preempt request has been resetted on the previous call to plan()
 }

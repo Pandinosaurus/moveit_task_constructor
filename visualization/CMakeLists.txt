@@ -1,6 +1,8 @@
-cmake_minimum_required(VERSION 3.1.3)
+cmake_minimum_required(VERSION 3.16)
 project(moveit_task_constructor_visualization)
 
+find_package(fmt REQUIRED)
+find_package(Boost CONFIG REQUIRED)
 find_package(catkin REQUIRED COMPONENTS
 	moveit_core
 	moveit_ros_visualization
@@ -9,6 +11,8 @@ find_package(catkin REQUIRED COMPONENTS
 	roscpp
 	rviz
 )
+
+moveit_build_options()
 
 # rviz transitively includes OGRE headers which break with `-Wall -Werror`
 # so isolate these include dirs and add them as SYSTEM include where needed.
@@ -25,17 +29,23 @@ endforeach()
 add_definitions(-DBOOST_MATH_DISABLE_FLOAT128)
 
 # Qt Stuff
-if("${rviz_QT_VERSION}" VERSION_LESS "5")
-	find_package(Qt4 ${rviz_QT_VERSION} REQUIRED QtCore QtGui)
-	include(${QT_USE_FILE})
+if("${rviz_QT_VERSION}" VERSION_GREATER_EQUAL "6")
+	find_package(Qt6 ${rviz_QT_VERSION} REQUIRED Core Widgets)
+	set(QT_LIBRARIES Qt6::Widgets)
 	macro(qt_wrap_ui)
-		qt4_wrap_ui(${ARGN})
+		qt6_wrap_ui(${ARGN})
 	endmacro()
-else()
+elseif("${rviz_QT_VERSION}" VERSION_GREATER_EQUAL "5")
 	find_package(Qt5 ${rviz_QT_VERSION} REQUIRED Core Widgets)
 	set(QT_LIBRARIES Qt5::Widgets)
 	macro(qt_wrap_ui)
 		qt5_wrap_ui(${ARGN})
+	endmacro()
+else()
+	find_package(Qt4 ${rviz_QT_VERSION} REQUIRED QtCore QtGui)
+	include(${QT_USE_FILE})
+	macro(qt_wrap_ui)
+		qt4_wrap_ui(${ARGN})
 	endmacro()
 endif()
 
@@ -56,8 +66,6 @@ catkin_package(
 		roscpp
 		rviz
 )
-
-set(CMAKE_CXX_STANDARD 14)
 
 add_subdirectory(visualization_tools)
 add_subdirectory(motion_planning_tasks)

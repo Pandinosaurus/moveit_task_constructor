@@ -32,6 +32,7 @@
 #include <QPainter>
 #include <QPaintEngine>
 #include <QWidget>
+#include <QWindow>
 
 namespace moveit_rviz_plugin {
 namespace utils {
@@ -55,7 +56,7 @@ static QPixmap maskToColorAndAlpha(const QPixmap& mask, const QColor& color) {
 
 using MaskAndColor = QPair<QPixmap, QColor>;
 using MasksAndColors = QList<MaskAndColor>;
-static MasksAndColors masksAndColors(const Icon& icon, int dpr) {
+static MasksAndColors masksAndColors(const Icon& icon, int /*dpr*/) {
 	MasksAndColors result;
 	for (const IconMaskAndColor& i : icon) {
 		const QString& file_name = i.first;
@@ -196,10 +197,15 @@ QString Icon::imageFileName() const {
 QIcon Icon::combinedIcon(const QList<QIcon>& icons) {
 	QIcon result;
 	QWindow* window = QApplication::allWidgets().first()->windowHandle();
+
 	for (const QIcon& icon : icons)
 		for (const QIcon::Mode mode : { QIcon::Disabled, QIcon::Normal })
 			for (const QSize& size : icon.availableSizes(mode))
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+				result.addPixmap(icon.pixmap(size, window->devicePixelRatio(), mode), mode);
+#else
 				result.addPixmap(icon.pixmap(window, size, mode), mode);
+#endif
 	return result;
 }
 }  // namespace utils

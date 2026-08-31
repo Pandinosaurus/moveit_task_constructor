@@ -61,6 +61,12 @@ int main(int argc, char** argv) {
 		connect->setCostTerm(std::make_unique<cost::LinkMotion>("panda_link4"));
 		alternatives->add(std::move(connect));
 	}
+	{
+		auto connect{ std::make_unique<stages::Connect>(
+			 "eef rotation", stages::Connect::GroupPlannerVector{ { "panda_arm", pipeline } }) };
+		connect->setCostTerm(std::make_unique<cost::LinkRotation>("panda_hand"));
+		alternatives->add(std::move(connect));
+	}
 
 	t.add(std::move(alternatives));
 
@@ -73,7 +79,7 @@ int main(int argc, char** argv) {
 	try {
 		t.plan(0);
 	} catch (const InitStageException& e) {
-		std::cout << e << std::endl;
+		std::cout << e << '\n';
 	}
 
 	ros::spin();

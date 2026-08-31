@@ -3,8 +3,6 @@
 
 #include "stage_mockups.h"
 
-#include <gtest/gtest.h>
-
 namespace moveit {
 namespace task_constructor {
 
@@ -46,8 +44,23 @@ double PredefinedCosts::cost() const {
 	return c;
 }
 
-GeneratorMockup::GeneratorMockup(PredefinedCosts&& costs)
-  : Generator{ "GEN" + std::to_string(++id_) }, costs_{ std::move(costs) } {}
+void DelayingWrapper::compute() {
+	if (!delay_.empty()) {  // if empty, we don't delay
+		if (delay_.front() == 0)
+			delay_.pop_front();  // we can compute() now
+		else {
+			--delay_.front();  // continue delaying
+			return;
+		}
+	}
+	// forward to child, eventually generating multiple solutions at once
+	WrapperBase::compute();
+}
+
+GeneratorMockup::GeneratorMockup(PredefinedCosts&& costs, std::size_t solutions_per_compute)
+  : Generator{ "GEN" + std::to_string(++id_) }
+  , costs_{ std::move(costs) }
+  , solutions_per_compute_{ solutions_per_compute } {}
 
 void GeneratorMockup::init(const moveit::core::RobotModelConstPtr& robot_model) {
 	ps_.reset(new planning_scene::PlanningScene(robot_model));
@@ -63,7 +76,8 @@ bool GeneratorMockup::canCompute() const {
 void GeneratorMockup::compute() {
 	++runs_;
 
-	spawn(InterfaceState(ps_), costs_.cost());
+	for (std::size_t i = 0; canCompute() && i < solutions_per_compute_; ++i)
+		spawn(InterfaceState(ps_), costs_.cost());
 }
 
 MonitoringGeneratorMockup::MonitoringGeneratorMockup(Stage* monitored, PredefinedCosts&& costs)
@@ -83,6 +97,7 @@ void ConnectMockup::compute(const InterfaceState& from, const InterfaceState& to
 
 	auto solution{ std::make_shared<SubTrajectory>() };
 	solution->setCost(costs_.cost());
+	solution->setComment(std::to_string(from.priority().cost()) + " -> " + std::to_string(to.priority().cost()));
 	connect(from, to, solution);
 }
 
