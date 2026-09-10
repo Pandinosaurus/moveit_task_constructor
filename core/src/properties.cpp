@@ -37,14 +37,16 @@
 */
 
 #include <moveit/task_constructor/properties.h>
-#include <boost/format.hpp>
+#include <moveit/task_constructor/fmt_p.h>
 #include <functional>
-#include <ros/console.h>
+#include <boost/core/demangle.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/clock.hpp>
 
 namespace moveit {
 namespace task_constructor {
 
-const std::string LOGNAME = "Properties";
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("Properties");
 
 class PropertyTypeRegistry
 {
@@ -73,7 +75,9 @@ public:
 	const Entry& entry(const std::type_index& type_index) const {
 		auto it = types_.find(type_index);
 		if (it == types_.end()) {
-			ROS_ERROR_STREAM_NAMED(LOGNAME, "Unregistered type: " << type_index.name());
+			rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+			RCLCPP_WARN_STREAM_THROTTLE(LOGGER, steady_clock, 10'000,
+			                            "Unregistered property type: " << boost::core::demangle(type_index.name()));
 			return dummy_;
 		}
 		return it->second;
@@ -289,8 +293,8 @@ void PropertyMap::performInitFrom(Property::SourceFlags source, const PropertyMa
 		} catch (const Property::undefined&) {
 		}
 
-		ROS_DEBUG_STREAM_NAMED(LOGNAME, pair.first << ": " << p.initialized_from_ << " -> " << source << ": "
-		                                           << Property::serialize(value));
+		RCLCPP_DEBUG_STREAM(
+		    LOGGER, fmt::format("{}: {} -> {}: {}", pair.first, p.initialized_from_, source, Property::serialize(value)));
 		p.setCurrentValue(value);
 		p.initialized_from_ = source;
 	}
@@ -316,9 +320,8 @@ Property::undefined::undefined(const std::string& name, const std::string& msg) 
 	setName(name);
 }
 
-static boost::format TYPE_ERROR_FMT("type (%1%) doesn't match property's declared type (%2%)");
 Property::type_error::type_error(const std::string& current_type, const std::string& declared_type)
-  : Property::error(boost::str(TYPE_ERROR_FMT % current_type % declared_type)) {}
+  : Property::error(fmt::format("type {} doesn't match property's declared type {}", current_type, declared_type)) {}
 
 }  // namespace task_constructor
 }  // namespace moveit

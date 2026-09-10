@@ -39,8 +39,9 @@
 
 #pragma once
 
+#include "trajectory_execution_info.h"
 #include "utils.h"
-#include <moveit/macros/class_forward.h>
+#include <moveit/macros/class_forward.hpp>
 #include <moveit/task_constructor/storage.h>
 #include <vector>
 #include <list>
@@ -52,26 +53,26 @@
 
 namespace moveit {
 namespace core {
-MOVEIT_CLASS_FORWARD(RobotModel)
+MOVEIT_CLASS_FORWARD(RobotModel);
 }
 }  // namespace moveit
 
 namespace planning_scene {
-MOVEIT_CLASS_FORWARD(PlanningScene)
+MOVEIT_CLASS_FORWARD(PlanningScene);
 }
 
 namespace planning_pipeline {
-MOVEIT_CLASS_FORWARD(PlanningPipeline)
+MOVEIT_CLASS_FORWARD(PlanningPipeline);
 }
 
 namespace robot_trajectory {
-MOVEIT_CLASS_FORWARD(RobotTrajectory)
+MOVEIT_CLASS_FORWARD(RobotTrajectory);
 }
 
 namespace moveit {
 namespace task_constructor {
 
-enum InterfaceFlag
+enum InterfaceFlag : uint8_t
 {
 	READS_START = 0x01,
 	READS_END = 0x02,
@@ -84,7 +85,7 @@ enum InterfaceFlag
 	GENERATE = WRITES_PREV_END | WRITES_NEXT_START,
 };
 
-using InterfaceFlags = Flags<InterfaceFlag>;
+using InterfaceFlags = utils::Flags<InterfaceFlag>;
 
 /** invert interface such that
  * - new end can connect to old start
@@ -108,8 +109,8 @@ constexpr InterfaceFlags UNKNOWN;
 constexpr InterfaceFlags START_IF_MASK({ READS_START, WRITES_PREV_END });
 constexpr InterfaceFlags END_IF_MASK({ READS_END, WRITES_NEXT_START });
 
-MOVEIT_CLASS_FORWARD(Interface)
-MOVEIT_CLASS_FORWARD(Stage)
+MOVEIT_CLASS_FORWARD(Interface);
+MOVEIT_CLASS_FORWARD(Stage);
 class InterfaceState;
 using InterfaceStatePair = std::pair<const InterfaceState&, const InterfaceState&>;
 
@@ -154,7 +155,7 @@ public:
 	 *
 	 * INTERFACE takes precedence over PARENT.
 	 */
-	enum PropertyInitializerSource
+	enum PropertyInitializerSource : uint8_t
 	{  // TODO: move to property.cpp
 		DEFAULT = 0,
 		MANUAL = 1,
@@ -184,6 +185,7 @@ public:
 	void setName(const std::string& name);
 
 	uint32_t introspectionId() const;
+	Introspection* introspection() const;
 
 	/** set computation timeout (in seconds)
 	 *
@@ -200,6 +202,14 @@ public:
 	void setMarkerNS(const std::string& marker_ns) { setProperty("marker_ns", marker_ns); }
 	/// marker namespace of solution markers
 	const std::string& markerNS() { return properties().get<std::string>("marker_ns"); }
+
+	/// Set and get info to use when executing the stage's trajectory
+	void setTrajectoryExecutionInfo(TrajectoryExecutionInfo trajectory_execution_info) {
+		setProperty("trajectory_execution_info", trajectory_execution_info);
+	}
+	TrajectoryExecutionInfo trajectoryExecutionInfo() const {
+		return properties().get<TrajectoryExecutionInfo>("trajectory_execution_info");
+	}
 
 	/// forwarding of properties between interface states
 	void forwardProperties(const InterfaceState& source, InterfaceState& dest);
@@ -231,6 +241,8 @@ public:
 	void silentFailure();
 	/// Should we generate failure solutions? Note: Always report a failure!
 	bool storeFailures() const;
+
+	virtual bool explainFailure(std::ostream& /*os*/) const { return false; };
 
 	/// Get the stage's property map
 	PropertyMap& properties();
@@ -271,7 +283,7 @@ class PropagatingEitherWayPrivate;
 /** Base class for stages that can propagate InterfaceStates
  *
  *  They read an InterfaceState on one side (start or end) and
- *  push a new InterfaceState to the opposite site.
+ *  push a new InterfaceState to the opposite side.
  *  By default, the class auto-derives its actual propagation direction from the context.
  *  In order to enforce forward, backward, or bothway propagation, one can use restrictDirection().
  */
@@ -281,7 +293,7 @@ public:
 	PRIVATE_CLASS(PropagatingEitherWay)
 	PropagatingEitherWay(const std::string& name = "propagating either way");
 
-	enum Direction
+	enum Direction : uint8_t
 	{
 		AUTO = 0x00,  // auto-derive direction from context
 		FORWARD = 0x01,  // propagate forward only
@@ -289,15 +301,33 @@ public:
 	};
 	void restrictDirection(Direction dir);
 
-	virtual void computeForward(const InterfaceState& from) = 0;
-	virtual void computeBackward(const InterfaceState& to) = 0;
-
-	void sendForward(const InterfaceState& from, InterfaceState&& to, SubTrajectory&& trajectory);
-	void sendBackward(InterfaceState&& from, const InterfaceState& to, SubTrajectory&& trajectory);
+	// Default implementations, using generic compute().
+	// Override if you want to use different code for FORWARD and BACKWARD directions.
+	virtual void computeForward(const InterfaceState& from);
+	virtual void computeBackward(const InterfaceState& to);
 
 protected:
 	// constructor for use in derived classes
 	PropagatingEitherWay(PropagatingEitherWayPrivate* impl);
+
+	template <Interface::Direction dir>
+	void send(const InterfaceState& start, InterfaceState&& end, SubTrajectory&& trajectory);
+
+	inline void sendForward(const InterfaceState& from, InterfaceState&& to, SubTrajectory&& trajectory) {
+		send<Interface::FORWARD>(from, std::move(to), std::move(trajectory));
+	}
+	inline void sendBackward(InterfaceState&& from, const InterfaceState& to, SubTrajectory&& trajectory) {
+		send<Interface::BACKWARD>(to, std::move(from), std::move(trajectory));
+	}
+
+private:
+	virtual bool compute(const InterfaceState& /*state*/, planning_scene::PlanningScenePtr& /*scene*/,
+	                     SubTrajectory& /*trajectory*/, Interface::Direction /*dir*/) {
+		throw std::runtime_error("PropagatingEitherWay: Override compute() or compute[Forward|Backward]()");
+	}
+
+	template <Interface::Direction dir>
+	void computeGeneric(const InterfaceState& start);
 };
 
 class PropagatingForwardPrivate;
@@ -335,6 +365,7 @@ public:
 
 	virtual bool canCompute() const = 0;
 	virtual void compute() = 0;
+	void spawn(InterfaceState&& from, InterfaceState&& to, SubTrajectory&& trajectory);
 	void spawn(InterfaceState&& state, SubTrajectory&& trajectory);
 	void spawn(InterfaceState&& state, double cost) {
 		SubTrajectory trajectory;

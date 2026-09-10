@@ -42,25 +42,30 @@
 #include "container.h"
 
 #include <moveit/task_constructor/introspection.h>
-#include <moveit_task_constructor_msgs/Solution.h>
+#include <moveit_task_constructor_msgs/msg/solution.hpp>
+#include <moveit_task_constructor_msgs/action/execute_task_solution.hpp>
 
-#include <moveit/macros/class_forward.h>
+#include <moveit/macros/class_forward.hpp>
 
-#include <moveit_msgs/MoveItErrorCodes.h>
+#include <moveit_msgs/msg/move_it_error_codes.hpp>
+#include <moveit/utils/moveit_error_code.hpp>
+
+#include <rclcpp/node.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 
 namespace moveit {
 namespace core {
-MOVEIT_CLASS_FORWARD(RobotModel)
-MOVEIT_CLASS_FORWARD(RobotState)
+MOVEIT_CLASS_FORWARD(RobotModel);
+MOVEIT_CLASS_FORWARD(RobotState);
 }  // namespace core
 }  // namespace moveit
 
 namespace moveit {
 namespace task_constructor {
 
-MOVEIT_CLASS_FORWARD(Stage)
-MOVEIT_CLASS_FORWARD(ContainerBase)
-MOVEIT_CLASS_FORWARD(Task)
+MOVEIT_CLASS_FORWARD(Stage);
+MOVEIT_CLASS_FORWARD(ContainerBase);
+MOVEIT_CLASS_FORWARD(Task);
 
 class TaskPrivate;
 /** A Task is the root of a tree of stages.
@@ -72,12 +77,9 @@ class Task : protected WrapperBase
 {
 public:
 	PRIVATE_CLASS(Task)
+	using WrapperBase::setCostTerm;
+	using WrapperBase::operator[];
 
-	// +1 TODO: move into MoveIt! core
-	static planning_pipeline::PlanningPipelinePtr
-	createPlanner(const moveit::core::RobotModelConstPtr& model, const std::string& ns = "move_group",
-	              const std::string& planning_plugin_param_name = "planning_plugin",
-	              const std::string& adapter_plugins_param_name = "request_adapters");
 	Task(const std::string& ns = "", bool introspection = true,
 	     ContainerBase::pointer&& container = std::make_unique<SerialContainer>("task pipeline"));
 	Task(Task&& other);  // NOLINT(performance-noexcept-move-constructor)
@@ -87,14 +89,17 @@ public:
 	const std::string& name() const { return stages()->name(); }
 	void setName(const std::string& name) { stages()->setName(name); }
 
+	Stage* findChild(const std::string& name) const { return stages()->findChild(name); }
+	Stage* operator[](int index) const { return stages()->operator[](index); }
+
 	const moveit::core::RobotModelConstPtr& getRobotModel() const;
 	/// setting the robot model also resets the task
 	void setRobotModel(const moveit::core::RobotModelConstPtr& robot_model);
 	/// load robot model from given parameter
-	void loadRobotModel(const std::string& robot_description = "robot_description");
+	void loadRobotModel(const rclcpp::Node::SharedPtr& node, const std::string& robot_description = "robot_description");
 
 	void add(Stage::pointer&& stage);
-	bool insert(Stage::pointer&& stage, int before = -1) override;
+	void insert(Stage::pointer&& stage, int before = -1) override;
 	void clear() final;
 
 	/// enable introspection publishing for use with rviz
@@ -116,20 +121,27 @@ public:
 	using WrapperBase::setTimeout;
 	using WrapperBase::timeout;
 
+	using WrapperBase::pruning;
+	using WrapperBase::setPruning;
+
 	/// reset all stages
 	void reset() final;
 	/// initialize all stages with given scene
 	void init();
 
 	/// reset, init scene (if not yet done), and init all stages, then start planning
-	bool plan(size_t max_solutions = 0);
-	/// interrupt current planning (or execution)
+	moveit::core::MoveItErrorCode plan(size_t max_solutions = 0);
+	/// interrupt current planning
 	void preempt();
+	void resetPreemptRequest();
 	/// execute solution, return the result
-	moveit_msgs::MoveItErrorCodes execute(const SolutionBase& s);
+	moveit::core::MoveItErrorCode execute(const SolutionBase& s);
 
 	/// print current task state (number of found solutions and propagated states) to std::cout
 	void printState(std::ostream& os = std::cout) const;
+
+	/// print an explanation for a planning failure to os
+	bool explainFailure(std::ostream& os = std::cout) const override;
 
 	size_t numSolutions() const { return solutions().size(); }
 	const ordered<SolutionBaseConstPtr>& solutions() const { return stages()->solutions(); }
@@ -156,6 +168,10 @@ protected:
 	void onNewSolution(const SolutionBase& s) override;
 
 private:
+	using WrapperBase::init;
+	// persistent node and client to call the ExecuteTaskSolution action and is only created if execute() is called
+	rclcpp::Node::SharedPtr execute_solution_node_;
+	std::shared_ptr<rclcpp_action::Client<moveit_task_constructor_msgs::action::ExecuteTaskSolution>> execute_ac_;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Task& task) {

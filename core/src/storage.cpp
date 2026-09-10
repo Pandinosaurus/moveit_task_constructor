@@ -38,13 +38,15 @@
 #include <moveit/task_constructor/stage_p.h>
 #include <moveit/task_constructor/storage.h>
 #include <moveit/task_constructor/introspection.h>
-#include <moveit/robot_trajectory/robot_trajectory.h>
-#include <moveit/robot_state/conversions.h>
-#include <moveit/planning_scene/planning_scene.h>
+#include <moveit/robot_trajectory/robot_trajectory.hpp>
+#include <moveit/robot_state/conversions.hpp>
+#include <moveit/planning_scene/planning_scene.hpp>
 #include <assert.h>
 
 namespace moveit {
 namespace task_constructor {
+
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("InterfaceState");
 
 planning_scene::PlanningSceneConstPtr ensureUpdated(const planning_scene::PlanningScenePtr& scene) {
 	// ensure scene's state is updated
@@ -58,7 +60,7 @@ InterfaceState::InterfaceState(const planning_scene::PlanningScenePtr& ps) : Int
 InterfaceState::InterfaceState(const planning_scene::PlanningSceneConstPtr& ps)
   : scene_(ps), priority_(Priority(0, 0.0)) {
 	if (scene_->getCurrentState().dirty())
-		ROS_ERROR_NAMED("InterfaceState", "Dirty PlanningScene! Please only forward clean ones into InterfaceState.");
+		RCLCPP_ERROR(LOGGER, "Dirty PlanningScene! Please only forward clean ones into InterfaceState.");
 }
 
 InterfaceState::InterfaceState(const planning_scene::PlanningSceneConstPtr& ps, const Priority& p)
@@ -70,18 +72,31 @@ InterfaceState::InterfaceState(const InterfaceState& other)
   : scene_(other.scene_), properties_(other.properties_), priority_(other.priority_) {}
 
 bool InterfaceState::Priority::operator<(const InterfaceState::Priority& other) const {
-	// infinite costs go always last
-	if (std::isinf(this->cost()) && std::isinf(other.cost()))
-		return this->depth() > other.depth();
-	else if (std::isinf(this->cost()))
-		return false;
-	else if (std::isinf(other.cost()))
-		return true;
+	// first order by status if that differs
+	if (status() != other.status())
+		return status() < other.status();
 
-	if (this->depth() == other.depth())
-		return this->cost() < other.cost();
-	else
-		return this->depth() > other.depth();
+	// then by depth if that differs
+	if (depth() != other.depth())
+		return depth() > other.depth();  // larger depth = smaller prio!
+
+	// finally by cost
+	return cost() < other.cost();
+}
+
+void InterfaceState::updatePriority(const InterfaceState::Priority& priority) {
+	// Never overwrite ARMED with PRUNED
+	if (priority.status() == InterfaceState::Status::PRUNED && priority_.status() == InterfaceState::Status::ARMED)
+		return;
+
+	if (owner()) {
+		owner()->updatePriority(this, priority);
+	} else {
+		setPriority(priority);
+	}
+}
+void InterfaceState::updateStatus(Status status) {
+	updatePriority(InterfaceState::Priority(priority_, status));
 }
 
 Interface::Interface(const Interface::NotifyFunction& notify) : notify_(notify) {}
@@ -108,14 +123,16 @@ void Interface::add(InterfaceState& state) {
 		it->priority_ = InterfaceState::Priority(1, state.incomingTrajectories().front()->cost());
 	else if (!state.outgoingTrajectories().empty())
 		it->priority_ = InterfaceState::Priority(1, state.outgoingTrajectories().front()->cost());
-	else  // otherwise, assume priority was well defined before
-		assert(it->priority_ >= InterfaceState::Priority(1, 0.0));
+	else {  // otherwise, assume priority was well defined before
+		assert(it->priority_.enabled());
+		assert(it->priority_.depth() >= 1u);
+	}
 
 	// move list node into interface's state list (sorted by priority)
 	moveFrom(it, container);
 	// and finally call notify callback
 	if (notify_)
-		notify_(it, false);
+		notify_(it, UpdateFlags());
 }
 
 Interface::container_type Interface::remove(iterator it) {
@@ -126,14 +143,47 @@ Interface::container_type Interface::remove(iterator it) {
 }
 
 void Interface::updatePriority(InterfaceState* state, const InterfaceState::Priority& priority) {
-	if (priority < state->priority()) {  // only allow decreasing of priority (smaller is better)
-		auto it = std::find(begin(), end(), state);  // find iterator to state
-		assert(it != end());  // state should be part of this interface
-		state->priority_ = priority;  // update priority
-		update(it);
-		if (notify_)
-			notify_(it, true);
+	const auto old_prio = state->priority();
+	if (priority == old_prio)
+		return;  // nothing to do
+
+	auto it = std::find(begin(), end(), state);  // find iterator to state
+	assert(it != end());  // state should be part of this interface
+
+	state->priority_ = priority;  // update priority
+	update(it);  // update position in ordered list
+
+	if (notify_) {
+		UpdateFlags updated(Update::ALL);
+		if (old_prio.status() == priority.status())
+			updated &= ~STATUS;
+
+		notify_(it, updated);  // notify callback
 	}
+}
+
+std::ostream& operator<<(std::ostream& os, const Interface& interface) {
+	if (interface.empty())
+		os << "---";
+	for (const auto& istate : interface)
+		os << istate->priority() << "  ";
+	return os;
+}
+const char* InterfaceState::STATUS_COLOR_[] = {
+	"\033[32m",  // ENABLED - green
+	"\033[33m",  // ARMED - yellow
+	"\033[31m",  // PRUNED - red
+	"\033[m"  // reset
+};
+std::ostream& operator<<(std::ostream& os, const InterfaceState::Priority& prio) {
+	// maps InterfaceState::Status values to output (color-changing) prefix
+	os << InterfaceState::colorForStatus(prio.status()) << prio.depth() << ":" << prio.cost()
+	   << InterfaceState::colorForStatus(3);
+	return os;
+}
+std::ostream& operator<<(std::ostream& os, Interface::Direction dir) {
+	os << (dir == Interface::FORWARD ? "↓" : "↑");
+	return os;
 }
 
 void SolutionBase::setCreator(Stage* creator) {
@@ -145,10 +195,33 @@ void SolutionBase::setCost(double cost) {
 	cost_ = cost;
 }
 
-void SolutionBase::fillInfo(moveit_task_constructor_msgs::SolutionInfo& info, Introspection* introspection) const {
+void SolutionBase::markAsFailure(const std::string& msg) {
+	setCost(std::numeric_limits<double>::infinity());
+	if (!msg.empty()) {
+		std::stringstream ss;
+		ss << msg;
+		if (!comment().empty())
+			ss << "\n" << comment();
+		setComment(ss.str());
+	}
+}
+
+void SolutionBase::toMsg(moveit_task_constructor_msgs::msg::Solution& msg, Introspection* introspection) const {
+	appendTo(msg, introspection);
+	start()->scene()->getPlanningSceneMsg(msg.start_scene);
+}
+
+void SolutionBase::fillInfo(moveit_task_constructor_msgs::msg::SolutionInfo& info, Introspection* introspection) const {
 	info.id = introspection ? introspection->solutionId(*this) : 0;
 	info.cost = this->cost();
-	info.comment = this->comment();
+	if (!this->plannerId().empty() && !this->comment().empty()) {
+		info.comment = this->plannerId() + " : " + this->comment();
+	} else if (!this->plannerId().empty() && this->comment().empty()) {
+		info.comment = "Solution generated by " + this->plannerId();
+	} else {
+		info.comment = this->comment();
+	}
+	info.planner_id = this->plannerId();
 	const Introspection* ci = introspection;
 	info.stage_id = ci ? ci->stageId(this->creator()) : 0;
 
@@ -157,15 +230,21 @@ void SolutionBase::fillInfo(moveit_task_constructor_msgs::SolutionInfo& info, In
 	std::copy(markers.begin(), markers.end(), info.markers.begin());
 }
 
-void SubTrajectory::fillMessage(moveit_task_constructor_msgs::Solution& msg, Introspection* introspection) const {
+void SubTrajectory::appendTo(moveit_task_constructor_msgs::msg::Solution& msg, Introspection* introspection) const {
 	msg.sub_trajectory.emplace_back();
-	moveit_task_constructor_msgs::SubTrajectory& t = msg.sub_trajectory.back();
+	moveit_task_constructor_msgs::msg::SubTrajectory& t = msg.sub_trajectory.back();
 	SolutionBase::fillInfo(t.info, introspection);
+
+	t.execution_info = creator()->trajectoryExecutionInfo();
 
 	if (trajectory())
 		trajectory()->getRobotTrajectoryMsg(t.trajectory);
 
-	this->end()->scene()->getPlanningSceneDiffMsg(t.scene_diff);
+	if (this->end()->scene()->getParent() == this->start()->scene() ||  // diff
+	    this->end()->scene() == this->start()->scene())  // identical (from generator)
+		this->end()->scene()->getPlanningSceneDiffMsg(t.scene_diff);
+	else
+		this->end()->scene()->getPlanningSceneMsg(t.scene_diff);
 }
 
 double SubTrajectory::computeCost(const CostTerm& f, std::string& comment) const {
@@ -176,8 +255,8 @@ void SolutionSequence::push_back(const SolutionBase& solution) {
 	subsolutions_.push_back(&solution);
 }
 
-void SolutionSequence::fillMessage(moveit_task_constructor_msgs::Solution& msg, Introspection* introspection) const {
-	moveit_task_constructor_msgs::SubSolution sub_msg;
+void SolutionSequence::appendTo(moveit_task_constructor_msgs::msg::Solution& msg, Introspection* introspection) const {
+	moveit_task_constructor_msgs::msg::SubSolution sub_msg;
 	SolutionBase::fillInfo(sub_msg.info, introspection);
 
 	// Usually subsolutions originate from another stage than this solution.
@@ -198,7 +277,7 @@ void SolutionSequence::fillMessage(moveit_task_constructor_msgs::Solution& msg, 
 	msg.sub_trajectory.reserve(msg.sub_trajectory.size() + subsolutions_.size());
 	for (const SolutionBase* s : subsolutions_) {
 		size_t current = msg.sub_trajectory.size();
-		s->fillMessage(msg, introspection);
+		s->appendTo(msg, introspection);
 
 		// zero IDs of sub solutions with same creator as this
 		if (s->creator() == this->creator()) {
@@ -215,12 +294,12 @@ double SolutionSequence::computeCost(const CostTerm& f, std::string& comment) co
 	return f(*this, comment);
 }
 
-void WrappedSolution::fillMessage(moveit_task_constructor_msgs::Solution& solution,
-                                  Introspection* introspection) const {
-	wrapped_->fillMessage(solution, introspection);
+void WrappedSolution::appendTo(moveit_task_constructor_msgs::msg::Solution& solution,
+                               Introspection* introspection) const {
+	wrapped_->appendTo(solution, introspection);
 
 	// prepend this solutions info as a SubSolution msg
-	moveit_task_constructor_msgs::SubSolution sub_msg;
+	moveit_task_constructor_msgs::msg::SubSolution sub_msg;
 	SolutionBase::fillInfo(sub_msg.info, introspection);
 	sub_msg.sub_solution_id.push_back(introspection ? introspection->solutionId(*wrapped_) : 0);
 	solution.sub_solution.insert(solution.sub_solution.begin(), std::move(sub_msg));

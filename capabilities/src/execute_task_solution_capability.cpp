@@ -36,14 +36,15 @@
 
 #include "execute_task_solution_capability.h"
 
-#include <moveit/plan_execution/plan_execution.h>
-#include <moveit/trajectory_processing/trajectory_tools.h>
-#include <moveit/kinematic_constraints/utils.h>
-#include <moveit/move_group/capability_names.h>
-#include <moveit/robot_state/conversions.h>
-#if MOVEIT_MASTER
-#include <moveit/utils/message_checks.h>
-#endif
+#include <moveit/moveit_cpp/moveit_cpp.hpp>
+#include <moveit/plan_execution/plan_execution.hpp>
+#include <moveit/trajectory_processing/trajectory_tools.hpp>
+#include <moveit/kinematic_constraints/utils.hpp>
+#include <moveit/move_group/capability_names.hpp>
+#include <moveit/robot_state/conversions.hpp>
+#include <moveit/utils/message_checks.hpp>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
 namespace {
 
@@ -78,73 +79,82 @@ const moveit::core::JointModelGroup* findJointModelGroup(const moveit::core::Rob
 }
 }  // namespace
 
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_task_constructor_visualization.execute_task_solution");
+
 namespace move_group {
 
 ExecuteTaskSolutionCapability::ExecuteTaskSolutionCapability() : MoveGroupCapability("ExecuteTaskSolution") {}
 
 void ExecuteTaskSolutionCapability::initialize() {
 	// configure the action server
-	as_.reset(new actionlib::SimpleActionServer<moveit_task_constructor_msgs::ExecuteTaskSolutionAction>(
-	    root_node_handle_, "execute_task_solution",
-	    std::bind(&ExecuteTaskSolutionCapability::goalCallback, this, std::placeholders::_1), false));
-	as_->registerPreemptCallback(std::bind(&ExecuteTaskSolutionCapability::preemptCallback, this));
-	as_->start();
+	as_ = rclcpp_action::create_server<moveit_task_constructor_msgs::action::ExecuteTaskSolution>(
+	    context_->moveit_cpp_->getNode(), "execute_task_solution",
+	    ActionServerType::GoalCallback(std::bind(&ExecuteTaskSolutionCapability::handleNewGoal, this,
+	                                             std::placeholders::_1, std::placeholders::_2)),
+	    ActionServerType::CancelCallback(
+	        std::bind(&ExecuteTaskSolutionCapability::preemptCallback, this, std::placeholders::_1)),
+	    ActionServerType::AcceptedCallback(
+	        [this](const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteTaskSolutionAction>>& goal_handle) {
+		        last_goal_future_ =
+		            std::async(std::launch::async, &ExecuteTaskSolutionCapability::execCallback, this, goal_handle);
+	        }));
 }
 
-void ExecuteTaskSolutionCapability::goalCallback(
-    const moveit_task_constructor_msgs::ExecuteTaskSolutionGoalConstPtr& goal) {
-	moveit_task_constructor_msgs::ExecuteTaskSolutionResult result;
+void ExecuteTaskSolutionCapability::execCallback(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteTaskSolutionAction>>& goal_handle) {
+	auto result = std::make_shared<moveit_task_constructor_msgs::action::ExecuteTaskSolution::Result>();
 
+	const auto& goal = goal_handle->get_goal();
 	if (!context_->plan_execution_) {
-		const std::string response = "Cannot execute solution. ~allow_trajectory_execution was set to false";
-		result.error_code.val = moveit_msgs::MoveItErrorCodes::CONTROL_FAILED;
-		as_->setAborted(result, response);
+		result->error_code.val = moveit_msgs::msg::MoveItErrorCodes::CONTROL_FAILED;
+		goal_handle->abort(result);
 		return;
 	}
 
 	plan_execution::ExecutableMotionPlan plan;
-	if (!constructMotionPlan(goal->solution, plan))
-		result.error_code.val = moveit_msgs::MoveItErrorCodes::INVALID_MOTION_PLAN;
+	if (!constructMotionPlan(goal->solution, plan, goal_handle))
+		result->error_code.val = moveit_msgs::msg::MoveItErrorCodes::INVALID_MOTION_PLAN;
 	else {
-		ROS_INFO_NAMED("ExecuteTaskSolution", "Executing TaskSolution");
-		result.error_code = context_->plan_execution_->executeAndMonitor(plan);
+		RCLCPP_INFO(LOGGER, "Executing TaskSolution");
+		result->error_code = context_->plan_execution_->executeAndMonitor(plan);
 	}
 
-	const std::string response = context_->plan_execution_->getErrorCodeString(result.error_code);
-
-	if (result.error_code.val == moveit_msgs::MoveItErrorCodes::SUCCESS)
-		as_->setSucceeded(result, response);
-	else if (result.error_code.val == moveit_msgs::MoveItErrorCodes::PREEMPTED)
-		as_->setPreempted(result, response);
+	if (result->error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+		goal_handle->succeed(result);
+	else if (result->error_code.val == moveit_msgs::msg::MoveItErrorCodes::PREEMPTED && goal_handle->is_canceling())
+		goal_handle->canceled(result);
 	else
-		as_->setAborted(result, response);
+		goal_handle->abort(result);
 }
 
-void ExecuteTaskSolutionCapability::preemptCallback() {
+rclcpp_action::CancelResponse ExecuteTaskSolutionCapability::preemptCallback(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteTaskSolutionAction>>& /*goal_handle*/) {
 	if (context_->plan_execution_)
 		context_->plan_execution_->stop();
+	return rclcpp_action::CancelResponse::ACCEPT;
 }
 
-bool ExecuteTaskSolutionCapability::constructMotionPlan(const moveit_task_constructor_msgs::Solution& solution,
-                                                        plan_execution::ExecutableMotionPlan& plan) {
-	robot_model::RobotModelConstPtr model = context_->planning_scene_monitor_->getRobotModel();
+bool ExecuteTaskSolutionCapability::constructMotionPlan(
+    const moveit_task_constructor_msgs::msg::Solution& solution, plan_execution::ExecutableMotionPlan& plan,
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ExecuteTaskSolutionAction>>& goal_handle) {
+	moveit::core::RobotModelConstPtr model = context_->planning_scene_monitor_->getRobotModel();
 
-	robot_state::RobotState state(model);
+	moveit::core::RobotState state(model);
 	{
 		planning_scene_monitor::LockedPlanningSceneRO scene(context_->planning_scene_monitor_);
 		state = scene->getCurrentState();
 	}
 
-	plan.plan_components_.reserve(solution.sub_trajectory.size());
+	plan.plan_components.reserve(solution.sub_trajectory.size());
 	for (size_t i = 0; i < solution.sub_trajectory.size(); ++i) {
-		const moveit_task_constructor_msgs::SubTrajectory& sub_traj = solution.sub_trajectory[i];
+		const moveit_task_constructor_msgs::msg::SubTrajectory& sub_traj = solution.sub_trajectory[i];
 
-		plan.plan_components_.emplace_back();
-		plan_execution::ExecutableTrajectory& exec_traj = plan.plan_components_.back();
+		plan.plan_components.emplace_back();
+		plan_execution::ExecutableTrajectory& exec_traj = plan.plan_components.back();
 
 		// define individual variable for use in closure below
 		const std::string description = std::to_string(i + 1) + "/" + std::to_string(solution.sub_trajectory.size());
-		exec_traj.description_ = description;
+		exec_traj.description = description;
 
 		const moveit::core::JointModelGroup* group = nullptr;
 		{
@@ -154,39 +164,50 @@ bool ExecuteTaskSolutionCapability::constructMotionPlan(const moveit_task_constr
 			if (!joint_names.empty()) {
 				group = findJointModelGroup(*model, joint_names);
 				if (!group) {
-					ROS_ERROR_STREAM_NAMED("ExecuteTaskSolution", "Could not find JointModelGroup that actuates {"
-					                                                  << boost::algorithm::join(joint_names, ", ") << "}");
+					RCLCPP_ERROR_STREAM(LOGGER, fmt::format("Could not find JointModelGroup that actuates {{{}}}",
+					                                        fmt::join(joint_names, ", ")));
 					return false;
 				}
-				ROS_DEBUG_NAMED("ExecuteTaskSolution", "Using JointModelGroup '%s' for execution",
-				                group->getName().c_str());
+				RCLCPP_DEBUG(LOGGER, "Using JointModelGroup '%s' for execution", group->getName().c_str());
 			}
 		}
-		exec_traj.trajectory_ = std::make_shared<robot_trajectory::RobotTrajectory>(model, group);
-		exec_traj.trajectory_->setRobotTrajectoryMsg(state, sub_traj.trajectory);
+		exec_traj.trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(model, group);
+		exec_traj.trajectory->setRobotTrajectoryMsg(state, sub_traj.trajectory);
+
+		// Check that sub trajectories that contain a valid trajectory have controllers configured.
+		if (!sub_traj.trajectory.joint_trajectory.points.empty() && sub_traj.execution_info.controller_names.empty()) {
+			RCLCPP_WARN(LOGGER,
+			            "The trajectory of stage '%i' from task '%s' does not have any controllers specified for "
+			            "trajectory execution. This might lead to unexpected controller selection.",
+			            sub_traj.info.stage_id, solution.task_id.c_str());
+		}
+		exec_traj.controller_name = sub_traj.execution_info.controller_names;
 
 		/* TODO add action feedback and markers */
-		exec_traj.effect_on_success_ = [this, sub_traj,
-		                                description](const plan_execution::ExecutableMotionPlan* /*plan*/) {
-#if MOVEIT_MASTER
-			if (!moveit::core::isEmpty(sub_traj.scene_diff)) {
-#else
-			if (!planning_scene::PlanningScene::isEmpty(sub_traj.scene_diff)) {
-#endif
-				ROS_DEBUG_STREAM_NAMED("ExecuteTaskSolution", "apply effect of " << description);
-				return context_->planning_scene_monitor_->newPlanningSceneMessage(sub_traj.scene_diff);
-			}
-			return true;
-		};
+		exec_traj.effect_on_success =
+		    [this, &scene_diff = const_cast<::moveit_msgs::msg::PlanningScene&>(sub_traj.scene_diff), description,
+		     goal_handle, i, no = solution.sub_trajectory.size()](const plan_execution::ExecutableMotionPlan* /*plan*/) {
+			    // publish feedback
+			    auto feedback = std::make_shared<moveit_task_constructor_msgs::action::ExecuteTaskSolution::Feedback>();
+			    feedback->sub_id = i;
+			    feedback->sub_no = no;
+			    goal_handle->publish_feedback(feedback);
 
-#if MOVEIT_MASTER
+			    // Never modify joint state directly (only via robot trajectories)
+			    scene_diff.robot_state.joint_state = sensor_msgs::msg::JointState();
+			    scene_diff.robot_state.multi_dof_joint_state = sensor_msgs::msg::MultiDOFJointState();
+			    scene_diff.robot_state.is_diff = true;  // silent empty JointState msg error
+
+			    if (!moveit::core::isEmpty(scene_diff)) {
+				    RCLCPP_DEBUG_STREAM(LOGGER, "apply effect of " << description);
+				    return context_->planning_scene_monitor_->newPlanningSceneMessage(scene_diff);
+			    }
+			    return true;
+		    };
+
 		if (!moveit::core::isEmpty(sub_traj.scene_diff.robot_state) &&
-#else
-		if (!planning_scene::PlanningScene::isEmpty(sub_traj.scene_diff.robot_state) &&
-#endif
 		    !moveit::core::robotStateMsgToRobotState(sub_traj.scene_diff.robot_state, state, true)) {
-			ROS_ERROR_STREAM_NAMED("ExecuteTaskSolution",
-			                       "invalid intermediate robot state in scene diff of SubTrajectory " << description);
+			RCLCPP_ERROR_STREAM(LOGGER, "invalid intermediate robot state in scene diff of SubTrajectory " << description);
 			return false;
 		}
 	}
@@ -196,5 +217,5 @@ bool ExecuteTaskSolutionCapability::constructMotionPlan(const moveit_task_constr
 
 }  // namespace move_group
 
-#include <class_loader/class_loader.hpp>
-CLASS_LOADER_REGISTER_CLASS(move_group::ExecuteTaskSolutionCapability, move_group::MoveGroupCapability)
+#include <pluginlib/class_list_macros.hpp>
+PLUGINLIB_EXPORT_CLASS(move_group::ExecuteTaskSolutionCapability, move_group::MoveGroupCapability)

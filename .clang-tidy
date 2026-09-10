@@ -1,6 +1,7 @@
 ---
-Checks:          '-*,
-                  performance-*,
+Checks:          'performance-*,
+                  -performance-noexcept-move-constructor,
+                  -clang-analyzer-core.CallAndMessage,
                   llvm-namespace-comment,
                   modernize-redundant-void-arg,
                   modernize-use-nullptr,
@@ -16,7 +17,6 @@ Checks:          '-*,
                   readability-identifier-naming,
                   '
 HeaderFilterRegex: '.*/moveit/task_constructor/.*\.h'
-AnalyzeTemporaryDtors: false
 CheckOptions:
   - key:             llvm-namespace-comment.ShortNamespaceLines
     value:           '10'
@@ -47,5 +47,7 @@ CheckOptions:
   - key:             readability-identifier-naming.ClassConstantCase
     value:           UPPER_CASE
   - key:             readability-identifier-naming.GlobalVariableCase
+    value:           UPPER_CASE
+  - key:             readability-identifier-naming.ConstexprVariableCase
     value:           UPPER_CASE
 ...

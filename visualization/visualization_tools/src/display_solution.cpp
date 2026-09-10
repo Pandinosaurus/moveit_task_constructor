@@ -36,9 +36,12 @@
 
 #include <moveit/visualization_tools/display_solution.h>
 #include <moveit/visualization_tools/marker_visualization.h>
-#include <moveit/planning_scene/planning_scene.h>
-#include <moveit/robot_trajectory/robot_trajectory.h>
-#include <ros/console.h>
+#include <moveit/planning_scene/planning_scene.hpp>
+#include <moveit/robot_trajectory/robot_trajectory.hpp>
+#include <rclcpp/logging.hpp>
+#include <fmt/format.h>
+
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_task_constructor_visualization.display_solution");
 
 namespace moveit_rviz_plugin {
 
@@ -64,7 +67,7 @@ float DisplaySolution::getWayPointDurationFromPrevious(const IndexPair& idx_pair
 	return data_[idx_pair.first].trajectory_->getWayPointDurationFromPrevious(idx_pair.second);
 }
 
-const robot_state::RobotStatePtr& DisplaySolution::getWayPointPtr(const IndexPair& idx_pair) const {
+const moveit::core::RobotStatePtr& DisplaySolution::getWayPointPtr(const IndexPair& idx_pair) const {
 	return data_[idx_pair.first].trajectory_->getWayPointPtr(idx_pair.second);
 }
 
@@ -86,12 +89,11 @@ const MarkerVisualizationPtr DisplaySolution::markers(const DisplaySolution::Ind
 }
 
 void DisplaySolution::setFromMessage(const planning_scene::PlanningScenePtr& start_scene,
-                                     const moveit_task_constructor_msgs::Solution& msg) {
-	if (msg.start_scene.robot_model_name != start_scene->getRobotModel()->getName()) {
-		ROS_ERROR("Solution for model '%s' but model '%s' was expected", msg.start_scene.robot_model_name.c_str(),
-		          start_scene->getRobotModel()->getName().c_str());
-		throw std::runtime_error("invalid robot model");
-	}
+                                     const moveit_task_constructor_msgs::msg::Solution& msg) {
+	if (msg.start_scene.robot_model_name != start_scene->getRobotModel()->getName())
+		throw std::invalid_argument(fmt::format("Solution for model '{}' but model '{}' was expected",
+		                                        msg.start_scene.robot_model_name,
+		                                        start_scene->getRobotModel()->getName()));
 
 	// initialize parent scene from solution's start scene
 	start_scene->setPlanningSceneMsg(msg.start_scene);
@@ -110,6 +112,7 @@ void DisplaySolution::setFromMessage(const planning_scene::PlanningScenePtr& sta
 		                        sub.trajectory.multi_dof_joint_trajectory.joint_names.end());
 		data_[i].comment_ = sub.info.comment;
 		data_[i].creator_id_ = sub.info.stage_id;
+		data_[i].execution_info_ = sub.execution_info;
 		steps_ += data_[i].trajectory_->getWayPointCount();
 
 		ref_scene->setPlanningSceneDiffMsg(sub.scene_diff);
@@ -126,11 +129,12 @@ void DisplaySolution::setFromMessage(const planning_scene::PlanningScenePtr& sta
 	}
 }
 
-void DisplaySolution::fillMessage(moveit_task_constructor_msgs::Solution& msg) const {
+void DisplaySolution::fillMessage(moveit_task_constructor_msgs::msg::Solution& msg) const {
 	start_scene_->getPlanningSceneMsg(msg.start_scene);
 	msg.sub_trajectory.resize(data_.size());
 	auto traj_it = msg.sub_trajectory.begin();
 	for (const auto& sub : data_) {
+		traj_it->execution_info = sub.execution_info_;
 		sub.scene_->getPlanningSceneDiffMsg(traj_it->scene_diff);
 		sub.trajectory_->getRobotTrajectoryMsg(traj_it->trajectory, sub.joints_);
 		++traj_it;

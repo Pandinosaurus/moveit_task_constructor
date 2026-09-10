@@ -43,7 +43,7 @@ using IconMaskAndColor = QPair<QString, QColor>;
 class Icon : public QVector<IconMaskAndColor>
 {
 public:
-	enum IconStyleOption
+	enum IconStyleOption : uint8_t
 	{
 		NONE = 0,
 		TINT = 1,
@@ -68,12 +68,6 @@ public:
 	// Try to avoid it. it is just there for special API cases in Qt Creator
 	// where icons are still defined as filename.
 	QString imageFileName() const;
-
-	// Returns either the classic or a themed icon depending on
-	// the current Theme::FlatModeIcons flag.
-	static QIcon sideBarIcon(const Icon& classic, const Icon& flat);
-	// Like sideBarIcon plus added action mode for the flat icon
-	static QIcon modeIcon(const Icon& classic, const Icon& flat, const Icon& flatActive);
 
 	// Combined icon pixmaps in Normal and Disabled states from several QIcons
 	static QIcon combinedIcon(const QList<QIcon>& icons);

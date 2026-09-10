@@ -40,9 +40,9 @@
 
 #include <moveit/task_constructor/stage.h>
 #include <moveit/task_constructor/solvers/planner_interface.h>
-#include <moveit_msgs/Constraints.h>
-#include <geometry_msgs/TwistStamped.h>
-#include <geometry_msgs/Vector3Stamped.h>
+#include <moveit_msgs/msg/constraints.hpp>
+#include <geometry_msgs/msg/twist_stamped.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 
 namespace moveit {
 namespace core {
@@ -61,12 +61,10 @@ public:
 	             const solvers::PlannerInterfacePtr& planner = solvers::PlannerInterfacePtr());
 
 	void init(const moveit::core::RobotModelConstPtr& robot_model) override;
-	void computeForward(const InterfaceState& from) override;
-	void computeBackward(const InterfaceState& to) override;
 
 	void setGroup(const std::string& group) { setProperty("group", group); }
 	/// setters for IK frame
-	void setIKFrame(const geometry_msgs::PoseStamped& pose) { setProperty("ik_frame", pose); }
+	void setIKFrame(const geometry_msgs::msg::PoseStamped& pose) { setProperty("ik_frame", pose); }
 	void setIKFrame(const Eigen::Isometry3d& pose, const std::string& link);
 	template <typename T>
 	void setIKFrame(const T& p, const std::string& link) {
@@ -84,21 +82,21 @@ public:
 		setProperty("max_distance", max_distance);
 	}
 
-	void setPathConstraints(moveit_msgs::Constraints path_constraints) {
+	void setPathConstraints(moveit_msgs::msg::Constraints path_constraints) {
 		setProperty("path_constraints", std::move(path_constraints));
 	}
 
 	/// perform twist motion on specified link
-	void setDirection(const geometry_msgs::TwistStamped& twist) { setProperty("direction", twist); }
+	void setDirection(const geometry_msgs::msg::TwistStamped& twist) { setProperty("direction", twist); }
 	/// translate link along given direction
-	void setDirection(const geometry_msgs::Vector3Stamped& direction) { setProperty("direction", direction); }
+	void setDirection(const geometry_msgs::msg::Vector3Stamped& direction) { setProperty("direction", direction); }
 	/// move specified joint variables by given amount
 	void setDirection(const std::map<std::string, double>& joint_deltas) { setProperty("direction", joint_deltas); }
 
 protected:
 	// return false if trajectory shouldn't be stored
 	bool compute(const InterfaceState& state, planning_scene::PlanningScenePtr& scene, SubTrajectory& trajectory,
-	             Direction dir);
+	             Interface::Direction dir) override;
 
 protected:
 	solvers::PlannerInterfacePtr planner_;

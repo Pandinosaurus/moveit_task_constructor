@@ -1,4 +1,4 @@
-add_library(${PROJECT_NAME}_stages
+add_library(${PROJECT_NAME}_stages SHARED
 	${PROJECT_INCLUDE}/stages/modify_planning_scene.h
 	${PROJECT_INCLUDE}/stages/fix_collision_objects.h
 
@@ -6,11 +6,14 @@ add_library(${PROJECT_NAME}_stages
 	${PROJECT_INCLUDE}/stages/fixed_state.h
 	${PROJECT_INCLUDE}/stages/fixed_cartesian_poses.h
 	${PROJECT_INCLUDE}/stages/generate_pose.h
+	${PROJECT_INCLUDE}/stages/generate_random_pose.h
 	${PROJECT_INCLUDE}/stages/generate_grasp_pose.h
 	${PROJECT_INCLUDE}/stages/generate_place_pose.h
 	${PROJECT_INCLUDE}/stages/compute_ik.h
 	${PROJECT_INCLUDE}/stages/passthrough.h
+	${PROJECT_INCLUDE}/stages/noop.h
 	${PROJECT_INCLUDE}/stages/predicate_filter.h
+	${PROJECT_INCLUDE}/stages/limit_solutions.h
 
 	${PROJECT_INCLUDE}/stages/connect.h
 	${PROJECT_INCLUDE}/stages/move_to.h
@@ -26,11 +29,13 @@ add_library(${PROJECT_NAME}_stages
 	fixed_state.cpp
 	fixed_cartesian_poses.cpp
 	generate_pose.cpp
+	generate_random_pose.cpp
 	generate_grasp_pose.cpp
 	generate_place_pose.cpp
 	compute_ik.cpp
 	passthrough.cpp
 	predicate_filter.cpp
+	limit_solutions.cpp
 
 	connect.cpp
 	move_to.cpp
@@ -39,8 +44,23 @@ add_library(${PROJECT_NAME}_stages
 	simple_grasp.cpp
 	pick.cpp
 )
-target_link_libraries(${PROJECT_NAME}_stages ${PROJECT_NAME} ${catkin_LIBRARIES})
+target_link_libraries(${PROJECT_NAME}_stages ${PROJECT_NAME})
+target_link_libraries(${PROJECT_NAME}_stages
+	${moveit_core_TARGETS}
+	${moveit_ros_planning_TARGETS}
+	${moveit_ros_planning_interface_TARGETS}
+	${tf2_eigen_TARGETS}
+	${geometry_msgs_TARGETS}
+	${moveit_task_constructor_msgs_TARGETS}
+	${visualization_msgs_TARGETS}
+)
 
-install(TARGETS ${PROJECT_NAME}_stages
-	ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-	LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+add_library(${PROJECT_NAME}_stage_plugins SHARED
+	plugins.cpp
+)
+target_link_libraries(${PROJECT_NAME}_stage_plugins ${PROJECT_NAME}_stages)
+
+install(TARGETS ${PROJECT_NAME}_stages ${PROJECT_NAME}_stage_plugins
+        EXPORT ${PROJECT_NAME}Targets
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib)

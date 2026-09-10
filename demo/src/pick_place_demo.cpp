@@ -31,105 +31,48 @@
  *********************************************************************/
 
 /* Author: Henning Kayser, Simon Goldstein
-   Desc:   A demo to show MoveIt Task Constructor in action
+  Desc:   A demo to show MoveIt Task Constructor in action
 */
 
 // ROS
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 
 // MTC pick/place demo implementation
 #include <moveit_task_constructor_demo/pick_place_task.h>
 
-#include <geometry_msgs/Pose.h>
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
-#include <rosparam_shortcuts/rosparam_shortcuts.h>
-#include <tf2_ros/transform_broadcaster.h>
-
-constexpr char LOGNAME[] = "moveit_task_constructor_demo";
-
-void spawnObject(moveit::planning_interface::PlanningSceneInterface& psi, const moveit_msgs::CollisionObject& object) {
-	if (!psi.applyCollisionObject(object))
-		throw std::runtime_error("Failed to spawn object: " + object.id);
-}
-
-moveit_msgs::CollisionObject createTable() {
-	ros::NodeHandle pnh("~");
-	std::string table_name, table_reference_frame;
-	std::vector<double> table_dimensions;
-	geometry_msgs::Pose pose;
-	std::size_t errors = 0;
-	errors += !rosparam_shortcuts::get(LOGNAME, pnh, "table_name", table_name);
-	errors += !rosparam_shortcuts::get(LOGNAME, pnh, "table_reference_frame", table_reference_frame);
-	errors += !rosparam_shortcuts::get(LOGNAME, pnh, "table_dimensions", table_dimensions);
-	errors += !rosparam_shortcuts::get(LOGNAME, pnh, "table_pose", pose);
-	rosparam_shortcuts::shutdownIfError(LOGNAME, errors);
-
-	moveit_msgs::CollisionObject object;
-	object.id = table_name;
-	object.header.frame_id = table_reference_frame;
-	object.primitives.resize(1);
-	object.primitives[0].type = shape_msgs::SolidPrimitive::BOX;
-	object.primitives[0].dimensions = table_dimensions;
-	pose.position.z -= 0.5 * table_dimensions[2];  // align surface with world
-	object.primitive_poses.push_back(pose);
-	return object;
-}
-
-moveit_msgs::CollisionObject createObject() {
-	ros::NodeHandle pnh("~");
-	std::string object_name, object_reference_frame;
-	std::vector<double> object_dimensions;
-	geometry_msgs::Pose pose;
-	std::size_t error = 0;
-	error += !rosparam_shortcuts::get(LOGNAME, pnh, "object_name", object_name);
-	error += !rosparam_shortcuts::get(LOGNAME, pnh, "object_reference_frame", object_reference_frame);
-	error += !rosparam_shortcuts::get(LOGNAME, pnh, "object_dimensions", object_dimensions);
-	error += !rosparam_shortcuts::get(LOGNAME, pnh, "object_pose", pose);
-	rosparam_shortcuts::shutdownIfError(LOGNAME, error);
-
-	moveit_msgs::CollisionObject object;
-	object.id = object_name;
-	object.header.frame_id = object_reference_frame;
-	object.primitives.resize(1);
-	object.primitives[0].type = shape_msgs::SolidPrimitive::CYLINDER;
-	object.primitives[0].dimensions = object_dimensions;
-	pose.position.z += 0.5 * object_dimensions[0];
-	object.primitive_poses.push_back(pose);
-	return object;
-}
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_task_constructor_demo");
 
 int main(int argc, char** argv) {
-	ROS_INFO_NAMED(LOGNAME, "Init moveit_task_constructor_demo");
-	ros::init(argc, argv, "moveit_task_constructor_demo");
-	ros::NodeHandle nh;
-	ros::AsyncSpinner spinner(1);
-	spinner.start();
+	rclcpp::init(argc, argv);
+	rclcpp::NodeOptions node_options;
+	node_options.automatically_declare_parameters_from_overrides(true);
+	auto node = rclcpp::Node::make_shared("moveit_task_constructor_demo", node_options);
+	std::thread spinning_thread([node] { rclcpp::spin(node); });
 
-	// Add table and object to planning scene
-	ros::Duration(1.0).sleep();  // Wait for ApplyPlanningScene service
-	moveit::planning_interface::PlanningSceneInterface psi;
-	ros::NodeHandle pnh("~");
-	if (pnh.param("spawn_table", true))
-		spawnObject(psi, createTable());
-	spawnObject(psi, createObject());
+	const auto param_listener = std::make_shared<pick_place_task_demo::ParamListener>(node);
+	const auto params = param_listener->get_params();
+	moveit_task_constructor_demo::setupDemoScene(params);
 
 	// Construct and run pick/place task
-	moveit_task_constructor_demo::PickPlaceTask pick_place_task("pick_place_task", nh);
-	pick_place_task.loadParameters();
-	pick_place_task.init();
-	if (pick_place_task.plan()) {
-		ROS_INFO_NAMED(LOGNAME, "Planning succeded");
-		if (pnh.param("execute", false)) {
+	moveit_task_constructor_demo::PickPlaceTask pick_place_task("pick_place_task");
+	if (!pick_place_task.init(node, params)) {
+		RCLCPP_INFO(LOGGER, "Initialization failed");
+		return 1;
+	}
+
+	if (pick_place_task.plan(params.max_solutions)) {
+		RCLCPP_INFO(LOGGER, "Planning succeded");
+		if (params.execute) {
 			pick_place_task.execute();
-			ROS_INFO_NAMED(LOGNAME, "Execution complete");
+			RCLCPP_INFO(LOGGER, "Execution complete");
 		} else {
-			ROS_INFO_NAMED(LOGNAME, "Execution disabled");
+			RCLCPP_INFO(LOGGER, "Execution disabled");
 		}
 	} else {
-		ROS_INFO_NAMED(LOGNAME, "Planning failed");
+		RCLCPP_INFO(LOGGER, "Planning failed");
 	}
 
 	// Keep introspection alive
-	ros::waitForShutdown();
+	spinning_thread.join();
 	return 0;
 }

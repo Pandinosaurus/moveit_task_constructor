@@ -1,10 +1,11 @@
-add_library(${PROJECT_NAME}
+add_library(${PROJECT_NAME} SHARED
 	${PROJECT_INCLUDE}/container.h
 	${PROJECT_INCLUDE}/container_p.h
 	${PROJECT_INCLUDE}/cost_queue.h
 	${PROJECT_INCLUDE}/introspection.h
 	${PROJECT_INCLUDE}/marker_tools.h
 	${PROJECT_INCLUDE}/merge.h
+	${PROJECT_INCLUDE}/moveit_compat.h
 	${PROJECT_INCLUDE}/properties.h
 	${PROJECT_INCLUDE}/stage.h
 	${PROJECT_INCLUDE}/stage_p.h
@@ -17,6 +18,7 @@ add_library(${PROJECT_NAME}
 	${PROJECT_INCLUDE}/solvers/cartesian_path.h
 	${PROJECT_INCLUDE}/solvers/joint_interpolation.h
 	${PROJECT_INCLUDE}/solvers/pipeline_planner.h
+	${PROJECT_INCLUDE}/solvers/multi_planner.h
 
 	container.cpp
 	cost_terms.cpp
@@ -27,22 +29,33 @@ add_library(${PROJECT_NAME}
 	stage.cpp
 	storage.cpp
 	task.cpp
+	utils.cpp
 
 	solvers/planner_interface.cpp
 	solvers/cartesian_path.cpp
-	solvers/pipeline_planner.cpp
 	solvers/joint_interpolation.cpp
+	solvers/pipeline_planner.cpp
+	solvers/multi_planner.cpp
 )
-target_link_libraries(${PROJECT_NAME} ${catkin_LIBRARIES})
+target_link_libraries(${PROJECT_NAME}
+	fmt
+	${moveit_core_TARGETS}
+	${moveit_ros_planning_TARGETS}
+	${moveit_ros_planning_interface_TARGETS}
+	${rviz_marker_tools_TARGETS}
+	${geometry_msgs_TARGETS}
+	${moveit_task_constructor_msgs_TARGETS}
+	${visualization_msgs_TARGETS}
+)
 target_include_directories(${PROJECT_NAME}
 	PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-	PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-	PUBLIC ${catkin_INCLUDE_DIRS}
+	       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+	       $<INSTALL_INTERFACE:include>
 )
-add_dependencies(${PROJECT_NAME} ${catkin_EXPORTED_TARGETS})
 
 add_subdirectory(stages)
 
 install(TARGETS ${PROJECT_NAME}
-	ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-	LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+        EXPORT ${PROJECT_NAME}Targets
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib)

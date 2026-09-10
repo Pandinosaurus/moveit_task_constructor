@@ -37,14 +37,14 @@
 #pragma once
 
 #include <utils/tree_merge_proxy_model.h>
-#include <moveit/macros/class_forward.h>
+#include <moveit/macros/class_forward.hpp>
 #include <QVector>
 
 namespace moveit_rviz_plugin {
 
-MOVEIT_CLASS_FORWARD(BaseTaskModel)
-MOVEIT_CLASS_FORWARD(TaskListModel)
-MOVEIT_CLASS_FORWARD(TaskDisplay)
+MOVEIT_CLASS_FORWARD(BaseTaskModel);
+MOVEIT_CLASS_FORWARD(TaskListModel);
+MOVEIT_CLASS_FORWARD(TaskDisplay);
 
 /** MetaTaskListModel maintains a model of multiple registered TaskListModels,
  *  which are grouped in a hierarchical fashion according to the name of the

@@ -34,19 +34,23 @@
 
 /* Authors: Robert Haschke */
 
+#include <fmt/format.h>
+
 #include <moveit/task_constructor/stages/fixed_cartesian_poses.h>
 #include <moveit/task_constructor/storage.h>
 #include <moveit/task_constructor/cost_terms.h>
 #include <moveit/task_constructor/marker_tools.h>
 
-#include <moveit/planning_scene/planning_scene.h>
+#include <moveit/planning_scene/planning_scene.hpp>
 #include <rviz_marker_tools/marker_creation.h>
 
 namespace moveit {
 namespace task_constructor {
 namespace stages {
 
-using PosesList = std::vector<geometry_msgs::PoseStamped>;
+static const rclcpp::Logger LOGGER = rclcpp::get_logger("FixedCartesianPoses");
+
+using PosesList = std::vector<geometry_msgs::msg::PoseStamped>;
 
 FixedCartesianPoses::FixedCartesianPoses(const std::string& name) : MonitoringGenerator(name) {
 	setCostTerm(std::make_unique<cost::Constant>(0.0));
@@ -55,7 +59,7 @@ FixedCartesianPoses::FixedCartesianPoses(const std::string& name) : MonitoringGe
 	p.declare<PosesList>("poses", PosesList(), "target poses to spawn");
 }
 
-void FixedCartesianPoses::addPose(const geometry_msgs::PoseStamped& pose) {
+void FixedCartesianPoses::addPose(const geometry_msgs::msg::PoseStamped& pose) {
 	moveit::task_constructor::Property& poses = properties().property("poses");
 	if (!poses.defined())
 		poses.setValue(PosesList({ pose }));
@@ -82,11 +86,16 @@ void FixedCartesianPoses::compute() {
 		return;
 
 	planning_scene::PlanningScenePtr scene = upstream_solutions_.pop()->end()->scene()->diff();
-	for (geometry_msgs::PoseStamped pose : properties().get<PosesList>("poses")) {
+	for (geometry_msgs::msg::PoseStamped pose : properties().get<PosesList>("poses")) {
 		if (pose.header.frame_id.empty())
 			pose.header.frame_id = scene->getPlanningFrame();
 		else if (!scene->knowsFrameTransform(pose.header.frame_id)) {
-			ROS_WARN_NAMED("FixedCartesianPoses", "Unknown frame: '%s'", pose.header.frame_id.c_str());
+			if (storeFailures()) {
+				SubTrajectory trajectory;
+				trajectory.markAsFailure(fmt::format("Unknown frame: '{}'", pose.header.frame_id));
+				spawn(InterfaceState(scene), std::move(trajectory));
+			} else
+				RCLCPP_WARN(LOGGER, "Unknown frame: '%s'", pose.header.frame_id.c_str());
 			continue;
 		}
 
